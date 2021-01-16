@@ -2,6 +2,15 @@
 #define CACTI_H
 
 #include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <pthread.h>
+#include <semaphore.h>
+#include <signal.h>
 
 typedef long message_type_t;
 
@@ -46,4 +55,4 @@ void actor_system_join(actor_id_t actor);
 
 int send_message(actor_id_t actor, message_t message);
 
-#endif
+#endif /* CACTI_H */
