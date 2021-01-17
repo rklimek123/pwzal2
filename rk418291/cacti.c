@@ -416,12 +416,30 @@ static void tp_destroy(tp_t** tp) {
 // Module state
 static _Atomic int running = 0;
 static bool killed = false;
+static bool sigint_set = false;
 static tp_t* thread_pool = NULL;
 static pthread_key_t* thread_number = NULL;
+
+static int threads_finished = 0;
+static pthread_mutex_t* thread_finish_lock = NULL;
+
+static void change_flag(int signo) {
+	killed = true;
+}
+
+static void set_sigint() {
+	struct sigaction sigint_action;
+	sigint_action.sa_handler = change_flag;
+	sigint_action.sa_flags = SA_RESTART;
+	sigaction(SIGINT, sigint_action, NULL);
+}
 
 static bool module_init_state() {
 	if (running++ != 0)
 		return false;
+
+	if (!sigint_set)
+		set_sigint();
 
 	for (int i = 0; i < CAST_LIMIT; ++i) {
 		if (actors[i] != NULL)
@@ -458,10 +476,20 @@ static bool module_init_state() {
 
 	possible_id = 0;
 
+	if (pthread_mutex_init(thread_finish_lock) != 0) {
+		pthread_mutex_destroy(possible_id_lock);
+		pthread_mutex_destroy(state_counters_lock);
+		pthread_key_destroy(*thread_number);
+		tp_destroy(thread_pool);
+		return false;
+	}
+
+	threads_finished = 0;
 	return true;
 }
 
 static void module_destroy_state() {
+	pthread_mutex_destroy(thread_finish_lock);
 	pthread_mutex_destroy(possible_id_lock);
 	pthread_mutex_destroy(state_counters_lock);
 	pthread_key_destroy(*thread_number);
@@ -474,6 +502,7 @@ static void module_destroy_state() {
 
 	count_actors = 0;
 	first_id = 0;
+	threads_finished = 0;
 	running = 0;
 }
 
@@ -487,6 +516,9 @@ static void* thread_running(void* t_number) {
 	int i = t_num;
 
 	while (actors_finished < count_actors) {
+		if (killed)
+			break;
+
 		actor_t* a = actors[i];
 		thread_pool->current_actor[t_num] = a;
 
@@ -500,6 +532,17 @@ static void* thread_running(void* t_number) {
 		if (i > count_actors)
 			i = t_num;
 	}
+
+	if (pthread_mutex_lock(thread_finish_lock) != 0)
+		exit(-1);
+
+	int tf = ++threads_finished;
+
+	if (pthread_mutex_unlock(thread_finish_lock) != 0)
+		exit(-1);
+
+	if (tf == POOL_SIZE)
+		module_destroy_state();
 
 	return 0;
 }
