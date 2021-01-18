@@ -1,16 +1,10 @@
 #ifndef CACTI_H
 #define CACTI_H
 
-#include <stddef.h>
 #include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
 #include <pthread.h>
-#include <semaphore.h>
-#include <signal.h>
+
 
 typedef long message_type_t;
 

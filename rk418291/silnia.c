@@ -3,8 +3,8 @@
 
 typedef unsigned long long num_t;
 
-#define MSG_FACTORIZE 1
-#define MSG_SEND 2
+#define MSG_FACTORIZE	(message_type_t)1
+#define MSG_SEND		(message_type_t)2
 
 message_t message_spawn(role_t* role) {
 	message_t msg;
@@ -46,20 +46,22 @@ message_t message_send(size_t nbytes, void* data) {
 void hello(void** stateptr, size_t nbytes, void* data) {}
 
 void factorize(void **stateptr, size_t nbytes, void *data) {
-	num_t* my_data = (num_t*)data;
-	num_t n = my_data[0];
-	num_t k = my_data[1];
-	num_t k_factorial = my_data[2];
+	num_t** my_data = (num_t**)data;
+	num_t* n = *my_data;
+	num_t* k = *(my_data + sizeof(num_t));
+	num_t* k_factorial = *(my_data + sizeof(num_t) * 2);
 
-	if (k == n) {
-		my_data[0] = k_factorial;
-		
+	role_t** role_data = (role_t**)data;
+	role_t* role = *(role_data + sizeof(num_t) * 3);
+
+	if (*k == *n) {
+		*n = *k;
 	}
 	else {
-		my_data[1] = k + 1;
-		my_data[2] = k_factorial * (k + 1);
+		*k = *k + 1;
+		*k_factorial = (*k_factorial) * (*k);
 		
-		if (send_message(actor_id_self(), message_spawn(my_data[3])) != 0)
+		if (send_message(actor_id_self(), message_spawn(role)) != 0)
 			exit(-2);
 
 		if (send_message(actor_id_self(), message_send(nbytes, data)) != 0)
@@ -75,6 +77,7 @@ void send(void** stateptr, size_t nbytes, void* data) {
 		exit(-2);
 }
 
+typedef void (* act_t2)(void** stateptr, size_t nbytes, void* data);
 
 int main() {
 	long long number;
@@ -85,28 +88,31 @@ int main() {
 		return 0;
 	}
 
-	role_t* role;
-	role->nprompts = 3;
-	role->prompts = (act_t*)malloc(sizeof(act_t) * role->nprompts);
+	role_t role;
+	role.nprompts = 3;
 
-	*(role->prompts) = hello;
-	*(role->prompts + sizeof(act_t*)) = factorize;
-	*(role->prompts + sizeof(act_t*) * 2) = send;
+	act_t2* acts = (act_t2*)malloc(sizeof(act_t2) * role.nprompts);
+
+	*(acts) = (act_t2)hello;
+	*(acts + sizeof(act_t2)) = factorize;
+	*(acts + sizeof(act_t2) * 2) = send;
+
+	role.prompts = (act_t*)acts;
 
 	num_t n = (num_t)number;
 	num_t k = 1;
 	num_t k_factorial = 1;
 
 	size_t nbytes = sizeof(role_t) + 3 * sizeof(num_t);
-	void* data[4];
-	data[0] = &n;
-	data[1] = &k;
-	data[2] = &k_factorial;
-	data[3] = role;
+	void** data = malloc(nbytes);
+	*data = &n;
+	*(data + sizeof(num_t)) = &k;
+	*(data + sizeof(num_t) * 2) = &k_factorial;
+	*(data + sizeof(num_t) * 3) = &role;
 
 	actor_id_t a;
 
-	if (actor_system_create(&a, role) != 0)
+	if (actor_system_create(&a, &role) != 0)
 		exit(-1);
 
 	int check = send_message(a, message_factorize(nbytes, (void*)data));
