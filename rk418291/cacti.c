@@ -336,14 +336,11 @@ static int actor_handle_godie(actor_t* a) {
 
 static int actor_handle_message(actor_t* a, message_t msg) {
 	message_type_t command = msg.message_type;
-	void** first_param = ((void***)(msg.data))[0];
-	size_t second_param = ((size_t*)(msg.data))[1];
-	void* third_param = ((void**)(msg.data))[2];
 
 	if ((size_t)command >= a->role->nprompts)
 		return ACTOR_ERROR;
 
-	(a->role->prompts)[command](first_param, second_param, third_param);
+	(a->role->prompts)[command](NULL, msg.nbytes, msg.data);
 	return ACTOR_SUCCESS;
 }
 
