@@ -130,6 +130,7 @@ typedef struct actor {
 	bool finished;
 	pthread_mutex_t lock;
 	pthread_cond_t wait_for_msg;
+	void* state;
 } actor_t;
 
 static size_t count_actors = 0;
@@ -165,6 +166,8 @@ static actor_t* actor_init() {
 		free(a);
 		return NULL;
 	}
+
+	a->state = NULL;
 
 	return a;
 }
@@ -296,9 +299,7 @@ static int actor_handle_message(actor_t* a, message_t msg) {
 	if ((size_t)command >= a->role->nprompts)
 		return ACTOR_ERROR;
 
-	
-
-	(a->role->prompts)[command](stateptr, msg.nbytes, msg.data);
+	(a->role->prompts)[command](&(a->state), msg.nbytes, msg.data);
 	return ACTOR_SUCCESS;
 }
 
