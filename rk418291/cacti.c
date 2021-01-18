@@ -135,7 +135,6 @@ typedef struct actor {
 static size_t count_actors = 0;
 static actor_t* actors[CAST_LIMIT];
 
-// counts actors whose queues are empty.
 static size_t actors_finished = 0;
 static pthread_mutex_t* state_counters_lock = NULL;
 
@@ -195,17 +194,6 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 		return ACTOR_ERROR;
 	}
 
-	if (a->finished) {
-		if (pthread_mutex_lock(state_counters_lock) != 0)
-			return ACTOR_ERROR;
-
-		a->finished = false;
-		--actors_finished;
-
-		if (pthread_mutex_unlock(state_counters_lock) != 0)
-			return ACTOR_ERROR;
-	}
-
 	if (pthread_cond_signal(&(a->wait_for_msg)) != 0)
 		return ACTOR_ERROR;
 
@@ -217,7 +205,7 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 
 // assumes you have a->lock acquired
 static message_t actor_take_msg(actor_t* a) {
-	while (q_empty(a->msg_q)) { // trzeba za³atwiæ nieblokuj¹co, (bonus: ale ¿eby nie by³o aktywnego oczekiwania dla threadu tez)
+	while (q_empty(a->msg_q)) { // trzeba za³atwiæ ¿eby nie by³o aktywnego oczekiwania dla threadu tez)
 		if (pthread_cond_wait(&(a->wait_for_msg), &(a->lock)) != 0)
 			exit(-1);
 	}
@@ -226,17 +214,6 @@ static message_t actor_take_msg(actor_t* a) {
 
 	if (q_pop(a->msg_q) != Q_SUCCESS)
 		exit(-1);
-
-	if (q_empty(a->msg_q)) {
-		if (pthread_mutex_lock(state_counters_lock) != 0)
-			exit(-1);
-
-		a->finished = true;
-		++actors_finished;
-
-		if (pthread_mutex_unlock(state_counters_lock) != 0)
-			exit(-1);
-	}
 
 	if (pthread_cond_signal(&(a->wait_for_msg)) != 0)
 		exit(-1);
@@ -296,8 +273,16 @@ static int actor_handle_godie(actor_t* a) {
 	if (pthread_mutex_lock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
 	
-	q_destroy(&(a->msg_q));
 	a->dead = true;
+	q_destroy(&(a->msg_q));
+
+	if (pthread_mutex_lock(state_counters_lock) != 0)
+		return ACTOR_ERROR;
+
+	++actors_finished;
+
+	if (pthread_mutex_unlock(state_counters_lock) != 0)
+		return ACTOR_ERROR;
 
 	if (pthread_mutex_unlock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
@@ -311,7 +296,9 @@ static int actor_handle_message(actor_t* a, message_t msg) {
 	if ((size_t)command >= a->role->nprompts)
 		return ACTOR_ERROR;
 
-	(a->role->prompts)[command](NULL, msg.nbytes, msg.data);
+	
+
+	(a->role->prompts)[command](stateptr, msg.nbytes, msg.data);
 	return ACTOR_SUCCESS;
 }
 
@@ -512,17 +499,6 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 	actor_t* a = actor_create(role);
 
 	if (a == NULL) {
-		module_destroy_state();
-		return -1;
-	}
-
-	message_t first_msg;
-	first_msg.message_type = MSG_HELLO;
-	first_msg.nbytes = 0;
-	first_msg.data = NULL;
-
-	if (actor_send_msg(a, first_msg) != ACTOR_SUCCESS) {
-		actor_destroy(&a);
 		module_destroy_state();
 		return -1;
 	}
