@@ -140,7 +140,7 @@ static size_t actors_finished = 0;
 static pthread_mutex_t* state_counters_lock = NULL;
 
 
-static actor_t* actor_init(actor_id_t id, role_t* const role) {
+static actor_t* actor_init() {
 	actor_t* a = (actor_t*)malloc(sizeof(actor_t));
 	if (a == NULL)
 		return NULL;
@@ -166,9 +166,6 @@ static actor_t* actor_init(actor_id_t id, role_t* const role) {
 		free(a);
 		return NULL;
 	}
-
-	a->id = id;
-	a->role = role;
 
 	return a;
 }
@@ -253,11 +250,8 @@ static actor_t* actor_get(actor_id_t actor_id) {
 	if (pthread_mutex_lock(state_counters_lock) != 0)
 		return NULL;
 
-	for (size_t i = 0; i < count_actors; ++i) {
-		if (actors[i]->id == actor_id) {
-			a = actors[i];
-		}
-	}
+	if ((size_t)actor_id < count_actors)
+		a = actors[actor_id];
 
 	if (pthread_mutex_unlock(state_counters_lock) != 0)
 		return NULL;
@@ -265,14 +259,16 @@ static actor_t* actor_get(actor_id_t actor_id) {
 	return a;
 }
 
-static actor_t* actor_create(actor_id_t actor_id, role_t* const role) {
-	actor_t* a = actor_init(actor_id, role);
+static actor_t* actor_create(role_t* const role) {
+	actor_t* a = actor_init();
 	if (a == NULL)
 		return NULL;
 
 	if (pthread_mutex_lock(state_counters_lock) != 0)
 		return NULL;
 
+	a->role = role;
+	a->id = count_actors;
 	actors[count_actors] = a;
 	++count_actors;
 
@@ -282,33 +278,8 @@ static actor_t* actor_create(actor_id_t actor_id, role_t* const role) {
 	return a;
 }
 
-// to handle MSG_SPAWN
-static actor_id_t possible_id = 0;
-static actor_id_t first_id = 0;
-static pthread_mutex_t* possible_id_lock = NULL;
-
-static actor_id_t get_new_id() {
-	if (pthread_mutex_lock(possible_id_lock) != 0)
-		return -1;
-
-	actor_id_t new_id = possible_id;
-	if (new_id == first_id)
-		++new_id;
-
-	possible_id = ++new_id;
-
-	if (pthread_mutex_unlock(possible_id_lock) != 0)
-		return -1;
-
-	return new_id;
-}
-
 static int actor_handle_spawn(actor_t* a, message_t msg) {
-	actor_id_t new_id = get_new_id();
-	if (new_id == -1)
-		return ACTOR_ERROR;
-
-	actor_t* new_a = actor_create(new_id, (role_t*)msg.data);
+	actor_t* new_a = actor_create((role_t*)msg.data);
 	if (new_a == NULL)
 		return ACTOR_ERROR;
 
@@ -464,17 +435,7 @@ static bool module_init_state() {
 	count_actors = 0;
 	actors_finished = 0;
 
-	if (pthread_mutex_init(possible_id_lock, NULL) != 0) {
-		pthread_mutex_destroy(state_counters_lock);
-		pthread_key_delete(*thread_number);
-		tp_destroy(&thread_pool);
-		return false;
-	}
-
-	possible_id = 0;
-
 	if (pthread_mutex_init(thread_finish_lock, NULL) != 0) {
-		pthread_mutex_destroy(possible_id_lock);
 		pthread_mutex_destroy(state_counters_lock);
 		pthread_key_delete(*thread_number);
 		tp_destroy(&thread_pool);
@@ -487,7 +448,6 @@ static bool module_init_state() {
 
 static void module_destroy_state() {
 	pthread_mutex_destroy(thread_finish_lock);
-	pthread_mutex_destroy(possible_id_lock);
 	pthread_mutex_destroy(state_counters_lock);
 	pthread_key_delete(*thread_number);
 	tp_destroy(&thread_pool);
@@ -498,7 +458,6 @@ static void module_destroy_state() {
 	}
 
 	count_actors = 0;
-	first_id = 0;
 	threads_finished = 0;
 	running = 0;
 }
@@ -550,8 +509,7 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 	if (!module_init_state())
 		return -1;
 
-	actor_t* a = actor_create(*actor, role);
-	first_id = *actor;
+	actor_t* a = actor_create(role);
 
 	if (a == NULL) {
 		module_destroy_state();
@@ -575,13 +533,14 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 		}
 	}
 
+	*actor = a->id;
 	return 0;
 }
 
 void actor_system_join(actor_id_t actor) {
 	actor_t* a = actor_get(actor);
 	if (a == NULL)
-		exit(-1);
+		exit(-1); 
 
 	tp_join(thread_pool);
 	module_destroy_state();
