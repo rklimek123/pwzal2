@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include "cacti.h"
 
 typedef unsigned long long num_t;
@@ -43,16 +42,19 @@ message_t message_send(size_t nbytes, void* data) {
 }
 
 
-void hello(void** stateptr, size_t nbytes, void* data) {}
+void hello(void** stateptr, size_t nbytes, void* data) {
+	printf("hi!\n");
+}
 
 void factorize(void **stateptr, size_t nbytes, void *data) {
+	printf("fact!\n");
 	num_t** my_data = (num_t**)data;
 	num_t* n = *my_data;
-	num_t* k = *(my_data + sizeof(num_t));
-	num_t* k_factorial = *(my_data + sizeof(num_t) * 2);
+	num_t* k = *(my_data + /*sizeof(num_t)*/1);
+	num_t* k_factorial = *(my_data + /*sizeof(num_t) * */2);
 
 	role_t** role_data = (role_t**)data;
-	role_t* role = *(role_data + sizeof(num_t) * 3);
+	role_t* role = *(role_data + /*sizeof(num_t) * */3);
 
 	if (*k == *n) {
 		*n = *k;
@@ -73,6 +75,7 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 }
 
 void send(void** stateptr, size_t nbytes, void* data) {
+	printf("send!\n");
 	if (send_message(actor_id_self() + 1, message_factorize(nbytes, data)) != 0)
 		exit(-2);
 }
@@ -94,8 +97,8 @@ int main() {
 	act_t2* acts = (act_t2*)malloc(sizeof(act_t2) * role.nprompts);
 
 	*(acts) = (act_t2)hello;
-	*(acts + sizeof(act_t2)) = factorize;
-	*(acts + sizeof(act_t2) * 2) = send;
+	*(acts + /*sizeof(act_t2)*/1) = factorize;
+	*(acts + /*sizeof(act_t2) * */2) = send;
 
 	role.prompts = (act_t*)acts;
 
@@ -106,22 +109,28 @@ int main() {
 	size_t nbytes = sizeof(role_t) + 3 * sizeof(num_t);
 	void** data = malloc(nbytes);
 	*data = &n;
-	*(data + sizeof(num_t)) = &k;
-	*(data + sizeof(num_t) * 2) = &k_factorial;
-	*(data + sizeof(num_t) * 3) = &role;
+	*(data + /*sizeof(num_t)*/1) = &k;
+	*(data + /*sizeof(num_t) * */2) = &k_factorial;
+	*(data + /*sizeof(num_t) * */3) = &role;
 
 	actor_id_t a;
 
-	if (actor_system_create(&a, &role) != 0)
+	if (actor_system_create(&a, &role) != 0) {
 		exit(-1);
-
+	}
+		
+	printf("created actor system\n");
+	
 	int check = send_message(a, message_factorize(nbytes, (void*)data));
+	printf("message sent to %ld\n", a);
 
 	if (check != 0)
 		exit(check);
 
 	actor_system_join(a);
-	printf("%llu\n", (num_t)data[0]);
+	printf("join\n");
+	printf("%llu\n", n);
+	free(data);
 
 	return 0;
 }

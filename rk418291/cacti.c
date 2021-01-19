@@ -333,17 +333,42 @@ static int actor_exec(actor_t* a) {
 
 // tp - thread pool
 typedef struct thread_pool {
-	pthread_t** threads;
+	pthread_t* threads;
 	actor_t** current_actor;
+	void* keys;
 } tp_t;
 
 static tp_t* tp_init() {
 	tp_t* tp = (tp_t*)malloc(sizeof(tp_t));
-	tp->threads = (pthread_t**)malloc(sizeof(pthread_t*) * POOL_SIZE);
-	tp->current_actor = (actor_t**)malloc(sizeof(actor_t*) * POOL_SIZE);
+	tp->threads = (pthread_t*)malloc(sizeof(pthread_t) * POOL_SIZE);
 
 	if (tp->threads == NULL)
 		return NULL;
+
+	tp->current_actor = (actor_t**)malloc(sizeof(actor_t*) * POOL_SIZE);
+
+	if (tp->current_actor == NULL) {
+		free(tp->threads);
+		return NULL;
+	}
+
+	tp->keys = malloc(sizeof(int) * POOL_SIZE);
+
+	if (tp->keys == NULL) {
+		free(tp->current_actor);
+		free(tp->threads);
+		return NULL;
+	}
+
+	int* keys = (int*)tp->keys;
+
+	for (int i = 0; i < POOL_SIZE; ++i) {
+		keys[i] = i;
+	}
+
+	for (int i = 0; i < POOL_SIZE; ++i) {
+		printf("key %d\n", ((int*)(tp->keys))[i]);
+	}
 
 	return tp;
 }
@@ -351,17 +376,22 @@ static tp_t* tp_init() {
 static void tp_join(tp_t* tp) {
 	int retval;
 
-	for (int i = 0; i < POOL_SIZE; ++i) {
-		if (tp->threads[i] != NULL) {
-			pthread_join(*(tp->threads[i]), (void**)&retval);
+	for (int i = 0; i < POOL_SIZE; i++) {
+		if (tp->threads + i != NULL) {
+			pthread_join(tp->threads[i], (void**)&retval);
+			printf("th %d joined\n", i);
 		}
+
 	}
 }
 
 static void tp_destroy(tp_t** tp) {
+	printf("before join\n");
 	tp_join(*tp);
+	printf("after join\n");
 	free((*tp)->threads);
 	free((*tp)->current_actor);
+	free((*tp)->keys);
 	free(*tp);
 }
 
@@ -406,10 +436,6 @@ static bool module_init_state() {
 	if ((thread_pool = tp_init()) == NULL)
 		return false;
 
-	for (int i = 0; i < POOL_SIZE; ++i) {
-		thread_pool->threads[i] = NULL;
-	}
-
 	if (pthread_key_create(&thread_number, NULL) != 0) {
 		tp_destroy(&thread_pool);
 		return false;
@@ -440,7 +466,9 @@ static void module_destroy_state() {
 	pthread_mutex_destroy(&thread_finish_lock);
 	pthread_mutex_destroy(&state_counters_lock);
 	pthread_key_delete(thread_number);
+	printf("trinkets destroyed\n");
 	tp_destroy(&thread_pool);
+	printf("tp destroyed\n");
 
 	for (int i = 0; i < CAST_LIMIT; ++i) {
 		if (actors[i] != NULL)
@@ -455,13 +483,16 @@ static void module_destroy_state() {
 
 // Threads
 static void* thread_running(void* t_number) {
+	printf("thread %d running\n", *((int*)t_number));
+
 	if (pthread_setspecific(thread_number, t_number) != 0)
 		exit(-1);
 
-	size_t t_num = *((size_t *)t_number);
+	size_t t_num = (size_t)(*((int*)t_number));
 	size_t i = t_num;
 
 	while (actors_finished < count_actors) {
+		//printf("thread %d running\n", *((int*)t_number));
 		if (killed)
 			break;
 
@@ -469,6 +500,7 @@ static void* thread_running(void* t_number) {
 		thread_pool->current_actor[t_num] = a;
 
 		if (a != NULL) {
+			//printf("thread %ld actor go to exec\n", t_num);
 			int check = actor_exec(a);
 			if (check == ACTOR_ERROR)
 				exit(-1);
@@ -479,6 +511,8 @@ static void* thread_running(void* t_number) {
 			i = t_num;
 	}
 
+	printf("thread %ld finished\n", t_num);
+
 	if (pthread_mutex_lock(&thread_finish_lock) != 0)
 		exit(-1);
 
@@ -487,8 +521,14 @@ static void* thread_running(void* t_number) {
 	if (pthread_mutex_unlock(&thread_finish_lock) != 0)
 		exit(-1);
 
-	if (tf == POOL_SIZE)
+	printf("thread %ld finished, threads finished: %d\n", t_num, tf);
+
+	if (tf == POOL_SIZE) {
+		printf("thread %ld gonna destroy\n", t_num);
 		module_destroy_state();
+		printf("thread %ld, destroyed\n", t_num);
+	}
+		
 
 	return 0;
 }
@@ -496,7 +536,6 @@ static void* thread_running(void* t_number) {
 
 // Interface
 int actor_system_create(actor_id_t* actor, role_t* const role) {
-	printf("lib trying to create\n");
 	if (!module_init_state())
 		return -1;
 	printf("state initialized\n");
@@ -509,10 +548,17 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 	}
 	
 	for (int i = 0; i < POOL_SIZE; ++i) {
-		if (pthread_create(thread_pool->threads[i], NULL, thread_running, (void*)&i) != 0) {
+		printf("thread %d to be created\n", i);
+
+		if (pthread_create(&(thread_pool->threads[i]),
+						NULL,
+						thread_running,
+						(void*)&(((int*)(thread_pool->keys))[i])) != 0) {
 			exit(-1);
 		}
 	}
+
+	printf("threads created\n");
 
 	*actor = a->id;
 	return 0;
