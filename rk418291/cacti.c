@@ -1,5 +1,5 @@
 #include "cacti.h"
-
+#include <errno.h> //printf
 // q - queue
 typedef struct queue {
 	int cur_len;
@@ -26,7 +26,7 @@ static q_t* q_init() {
 	}
 
 	q->front = 0;
-	q->back = 0;
+	q->back = -1;
 	return q;
 }
 
@@ -191,6 +191,8 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 	if (a->dead)
 		return ACTOR_DEAD;
 
+	printf("what im sending %ld\n", msg.message_type);
+
 	int ret = q_push(a->msg_q, msg);
 
 	if (ret != Q_SUCCESS) {
@@ -294,6 +296,7 @@ static int actor_handle_godie(actor_t* a) {
 }
 
 static int actor_handle_message(actor_t* a, message_t msg) {
+	printf("actor %ld handling %ld\n", a->id, msg.message_type);
 	message_type_t command = msg.message_type;
 
 	if ((size_t)command >= a->role->nprompts)
@@ -306,6 +309,9 @@ static int actor_handle_message(actor_t* a, message_t msg) {
 static int actor_exec(actor_t* a) {
 	if (pthread_mutex_lock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
+
+	printf("actor %ld, dead %d, finished %d, cur_len %d, max_len %d\n",
+		a->id, a->dead, a->finished, a->msg_q->cur_len, a->msg_q->max_len);
 
 	if (q_empty(a->msg_q)) { // rozwi¹zanie nieblokuj¹ce, ale z aktywnym oczekiwaniem
 		if (pthread_mutex_unlock(&(a->lock)) != 0)
@@ -366,33 +372,27 @@ static tp_t* tp_init() {
 		keys[i] = i;
 	}
 
-	for (int i = 0; i < POOL_SIZE; ++i) {
-		printf("key %d\n", ((int*)(tp->keys))[i]);
-	}
-
 	return tp;
 }
 
 static void tp_join(tp_t* tp) {
 	int retval;
 
-	for (int i = 0; i < POOL_SIZE; i++) {
-		if (tp->threads + i != NULL) {
-			pthread_join(tp->threads[i], (void**)&retval);
-			printf("th %d joined\n", i);
-		}
-
+	for (int j = 0; j < POOL_SIZE; j++) {
+		printf("statuses: ESRCH: %d\tEDEADLK: %d\tEINVAL: %d\n", ESRCH, EDEADLK, EINVAL);
+		printf("th %d joined with status %d\n", j, pthread_join(tp->threads[j], (void**)&retval));
 	}
+	printf("tp join exit loop\n");
 }
 
 static void tp_destroy(tp_t** tp) {
-	printf("before join\n");
-	tp_join(*tp);
-	printf("after join\n");
 	free((*tp)->threads);
 	free((*tp)->current_actor);
 	free((*tp)->keys);
 	free(*tp);
+	printf("tp destroyed finally\n");
+	//mozna pomyslec o dodaniu POOL_SIZE + 1'szego w¹tku, ktory bêdzie czyœci³ gdy bedzie potrzeba.
+	// bo chyba czyszczenie tp->threads przez w¹tek z tp->threads, nie jest dobrym pomys³em
 }
 
 
@@ -529,7 +529,7 @@ static void* thread_running(void* t_number) {
 		printf("thread %ld, destroyed\n", t_num);
 	}
 		
-
+	printf("thread %ld quit\n", t_num);
 	return 0;
 }
 
@@ -579,6 +579,7 @@ void actor_system_join(actor_id_t actor) {
 #define SM_ERROR -3
 
 int send_message(actor_id_t actor, message_t message) {
+	printf("what i want to send %ld\n", message.message_type);
 	actor_t* a = actor_get(actor);
 
 	if (a == NULL)

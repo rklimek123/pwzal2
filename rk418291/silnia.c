@@ -10,11 +10,13 @@ message_t message_spawn(role_t* role) {
 	msg.message_type = MSG_SPAWN;
 	msg.nbytes = sizeof(role->nprompts) + sizeof(role->prompts);
 
-	for (size_t i = 0; i < role->nprompts; ++i) {
+	/*for (size_t i = 0; i < role->nprompts; ++i) {
 		msg.nbytes += sizeof(*(role->prompts + i));
-	}
+	}*/
 
+	printf("f%$* C!\n");
 	msg.data = role;
+	printf("f%$* C even more!\n");
 
 	return msg;
 }
@@ -47,7 +49,7 @@ void hello(void** stateptr, size_t nbytes, void* data) {
 }
 
 void factorize(void **stateptr, size_t nbytes, void *data) {
-	printf("fact!\n");
+	printf("fact!\n");//start here
 	num_t** my_data = (num_t**)data;
 	num_t* n = *my_data;
 	num_t* k = *(my_data + /*sizeof(num_t)*/1);
@@ -118,7 +120,7 @@ int main() {
 	if (actor_system_create(&a, &role) != 0) {
 		exit(-1);
 	}
-		
+
 	printf("created actor system\n");
 	
 	int check = send_message(a, message_factorize(nbytes, (void*)data));
