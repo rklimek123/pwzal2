@@ -137,7 +137,7 @@ static size_t count_actors = 0;
 static actor_t* actors[CAST_LIMIT];
 
 static size_t actors_finished = 0;
-static pthread_mutex_t* state_counters_lock = NULL;
+static pthread_mutex_t state_counters_lock;
 
 
 static actor_t* actor_init() {
@@ -227,13 +227,13 @@ static message_t actor_take_msg(actor_t* a) {
 static actor_t* actor_get(actor_id_t actor_id) {
 	actor_t* a = NULL;
 
-	if (pthread_mutex_lock(state_counters_lock) != 0)
+	if (pthread_mutex_lock(&state_counters_lock) != 0)
 		return NULL;
 
 	if ((size_t)actor_id < count_actors)
 		a = actors[actor_id];
 
-	if (pthread_mutex_unlock(state_counters_lock) != 0)
+	if (pthread_mutex_unlock(&state_counters_lock) != 0)
 		return NULL;
 
 	return a;
@@ -244,7 +244,7 @@ static actor_t* actor_create(role_t* const role) {
 	if (a == NULL)
 		return NULL;
 
-	if (pthread_mutex_lock(state_counters_lock) != 0)
+	if (pthread_mutex_lock(&state_counters_lock) != 0)
 		return NULL;
 
 	a->role = role;
@@ -252,7 +252,7 @@ static actor_t* actor_create(role_t* const role) {
 	actors[count_actors] = a;
 	++count_actors;
 
-	if (pthread_mutex_unlock(state_counters_lock) != 0)
+	if (pthread_mutex_unlock(&state_counters_lock) != 0)
 		return NULL;
 
 	return a;
@@ -279,12 +279,12 @@ static int actor_handle_godie(actor_t* a) {
 	a->dead = true;
 	q_destroy(&(a->msg_q));
 
-	if (pthread_mutex_lock(state_counters_lock) != 0)
+	if (pthread_mutex_lock(&state_counters_lock) != 0)
 		return ACTOR_ERROR;
 
 	++actors_finished;
 
-	if (pthread_mutex_unlock(state_counters_lock) != 0)
+	if (pthread_mutex_unlock(&state_counters_lock) != 0)
 		return ACTOR_ERROR;
 
 	if (pthread_mutex_unlock(&(a->lock)) != 0)
@@ -371,10 +371,10 @@ static _Atomic int running = 0;
 static bool killed = false;
 static bool sigint_set = false;
 static tp_t* thread_pool = NULL;
-static pthread_key_t* thread_number = NULL;
+static pthread_key_t thread_number;
 
 static int threads_finished = 0;
-static pthread_mutex_t* thread_finish_lock = NULL;
+static pthread_mutex_t thread_finish_lock;
 
 static void change_flag(int signo) {
 	if (signo == SIGINT)
@@ -388,6 +388,7 @@ static void set_sigint() {
 	sigint_action.sa_handler = change_flag;
 	sigint_action.sa_flags = SA_RESTART;
 	sigaction(SIGINT, &sigint_action, NULL);
+	sigint_set = true;
 }
 
 static bool module_init_state() {
@@ -409,13 +410,13 @@ static bool module_init_state() {
 		thread_pool->threads[i] = NULL;
 	}
 
-	if (pthread_key_create(thread_number, NULL) != 0) {
+	if (pthread_key_create(&thread_number, NULL) != 0) {
 		tp_destroy(&thread_pool);
 		return false;
 	}
 
-	if (pthread_mutex_init(state_counters_lock, NULL) != 0) {
-		pthread_key_delete(*thread_number);
+	if (pthread_mutex_init(&state_counters_lock, NULL) != 0) {
+		pthread_key_delete(thread_number);
 		tp_destroy(&thread_pool);
 		return false;
 	}
@@ -423,21 +424,22 @@ static bool module_init_state() {
 	count_actors = 0;
 	actors_finished = 0;
 
-	if (pthread_mutex_init(thread_finish_lock, NULL) != 0) {
-		pthread_mutex_destroy(state_counters_lock);
-		pthread_key_delete(*thread_number);
+	if (pthread_mutex_init(&thread_finish_lock, NULL) != 0) {
+		pthread_mutex_destroy(&state_counters_lock);
+		pthread_key_delete(thread_number);
 		tp_destroy(&thread_pool);
 		return false;
 	}
 
 	threads_finished = 0;
+
 	return true;
 }
 
 static void module_destroy_state() {
-	pthread_mutex_destroy(thread_finish_lock);
-	pthread_mutex_destroy(state_counters_lock);
-	pthread_key_delete(*thread_number);
+	pthread_mutex_destroy(&thread_finish_lock);
+	pthread_mutex_destroy(&state_counters_lock);
+	pthread_key_delete(thread_number);
 	tp_destroy(&thread_pool);
 
 	for (int i = 0; i < CAST_LIMIT; ++i) {
@@ -453,7 +455,7 @@ static void module_destroy_state() {
 
 // Threads
 static void* thread_running(void* t_number) {
-	if (pthread_setspecific(*thread_number, t_number) != 0)
+	if (pthread_setspecific(thread_number, t_number) != 0)
 		exit(-1);
 
 	size_t t_num = *((size_t *)t_number);
@@ -477,12 +479,12 @@ static void* thread_running(void* t_number) {
 			i = t_num;
 	}
 
-	if (pthread_mutex_lock(thread_finish_lock) != 0)
+	if (pthread_mutex_lock(&thread_finish_lock) != 0)
 		exit(-1);
 
 	int tf = ++threads_finished;
 
-	if (pthread_mutex_unlock(thread_finish_lock) != 0)
+	if (pthread_mutex_unlock(&thread_finish_lock) != 0)
 		exit(-1);
 
 	if (tf == POOL_SIZE)
@@ -494,8 +496,10 @@ static void* thread_running(void* t_number) {
 
 // Interface
 int actor_system_create(actor_id_t* actor, role_t* const role) {
+	printf("lib trying to create\n");
 	if (!module_init_state())
 		return -1;
+	printf("state initialized\n");
 
 	actor_t* a = actor_create(role);
 
@@ -552,7 +556,7 @@ int send_message(actor_id_t actor, message_t message) {
 }
 
 actor_id_t actor_id_self() {
-	size_t* t_num_ptr = (size_t*)pthread_getspecific(*thread_number);
+	size_t* t_num_ptr = (size_t*)pthread_getspecific(thread_number);
 
 	if (t_num_ptr == NULL)
 		exit(-1);
