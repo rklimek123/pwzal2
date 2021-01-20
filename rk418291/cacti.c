@@ -1,5 +1,5 @@
 #include "cacti.h"
-#include <errno.h> //printf
+
 // q - queue
 typedef struct queue {
 	int cur_len;
@@ -133,10 +133,10 @@ typedef struct actor {
 	void* state;
 } actor_t;
 
-static size_t count_actors = 0;
+static size_t count_actors;
 static actor_t* actors[CAST_LIMIT];
 
-static size_t actors_finished = 0;
+static size_t actors_finished;
 static pthread_mutex_t state_counters_lock;
 
 
@@ -176,7 +176,7 @@ static void actor_destroy(actor_t** a) {
 	pthread_cond_destroy(&((*a)->wait_for_msg));
 	pthread_mutex_destroy(&((*a)->lock));
 	q_destroy(&((*a)->msg_q));
-	free(a);
+	free(*a);
 }
 
 #define ACTOR_SUCCESS 0
@@ -210,7 +210,7 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 
 // assumes you have a->lock acquired
 static message_t actor_take_msg(actor_t* a) {
-	while (q_empty(a->msg_q)) { // trzeba za³atwiæ ¿eby nie by³o aktywnego oczekiwania dla threadu tez)
+	while (q_empty(a->msg_q)) { // trzeba zaï¿½atwiï¿½ ï¿½eby nie byï¿½o aktywnego oczekiwania dla threadu tez)
 		if (pthread_cond_wait(&(a->wait_for_msg), &(a->lock)) != 0)
 			exit(-1);
 	}
@@ -310,14 +310,14 @@ static int actor_exec(actor_t* a) {
 	if (pthread_mutex_lock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
 
-	printf("actor %ld, dead %d, finished %d, cur_len %d, max_len %d\n",
-		a->id, a->dead, a->finished, a->msg_q->cur_len, a->msg_q->max_len);
-
-	if (q_empty(a->msg_q)) { // rozwi¹zanie nieblokuj¹ce, ale z aktywnym oczekiwaniem
+	if (q_empty(a->msg_q)) { // rozwiï¿½zanie nieblokujï¿½ce, ale z aktywnym oczekiwaniem, NIEÅ»YWOTNE przez moÅ¼liwoÅ›Ä‡ wywoÅ‚anie actor_system_join z wewnÄ™trznego wÄ…tku.
 		if (pthread_mutex_unlock(&(a->lock)) != 0)
 			return ACTOR_ERROR;
 		return ACTOR_IDLE;
 	}
+
+	printf("actor %ld, dead %d, finished %d, cur_len %d, max_len %d\n",
+		a->id, a->dead, a->finished, a->msg_q->cur_len, a->msg_q->max_len);
 		
 	message_t msg = actor_take_msg(a);
 
@@ -375,48 +375,117 @@ static tp_t* tp_init() {
 	return tp;
 }
 
-static void tp_join(tp_t* tp) {
-	int retval;
-
-	for (int j = 0; j < POOL_SIZE; j++) {
-		printf("statuses: ESRCH: %d\tEDEADLK: %d\tEINVAL: %d\n", ESRCH, EDEADLK, EINVAL);
-		printf("th %d joined with status %d\n", j, pthread_join(tp->threads[j], (void**)&retval));
-	}
-	printf("tp join exit loop\n");
-}
-
 static void tp_destroy(tp_t** tp) {
 	free((*tp)->threads);
 	free((*tp)->current_actor);
 	free((*tp)->keys);
 	free(*tp);
 	printf("tp destroyed finally\n");
-	//mozna pomyslec o dodaniu POOL_SIZE + 1'szego w¹tku, ktory bêdzie czyœci³ gdy bedzie potrzeba.
-	// bo chyba czyszczenie tp->threads przez w¹tek z tp->threads, nie jest dobrym pomys³em
 }
 
 
 // Module state
 static _Atomic int running = 0;
-static bool killed = false;
 static bool sigint_set = false;
-static tp_t* thread_pool = NULL;
+static bool killed;
+static tp_t* thread_pool;
 static pthread_key_t thread_number;
 
-static int threads_finished = 0;
-static pthread_mutex_t thread_finish_lock;
+static pthread_mutex_t join_mutex;
+static pthread_cond_t waiting_to_endoperating;
+static pthread_cond_t waiting_to_enddestroying;
+static bool finished_operating;
+static int joining;
+static bool finished_destroying;
+static int toexit;
 
-static void change_flag(int signo) {
+static _Atomic int threads_finished;
+
+static _Atomic int destroyed;
+static bool registered_finished_operating;
+
+static void reset_sigint() {
+	struct sigaction sigint_action;
+	sigint_action.sa_handler = SIG_DFL;
+	sigint_action.sa_flags = SA_NODEFER;
+	sigaction(SIGINT, &sigint_action, NULL);
+}
+
+static void module_destroy_state() {
+	reset_sigint();
+	pthread_cond_destroy(&waiting_to_endoperating);
+	pthread_mutex_destroy(&state_counters_lock);
+	pthread_key_delete(thread_number);
+	tp_destroy(&thread_pool);
+
+	for (int i = 0; i < CAST_LIMIT; ++i) {
+		if (actors[i] != NULL)
+			actor_destroy(&(actors[i]));
+	}
+
+	printf("keshita\n");
+}
+
+static void tp_join() {
+	if (pthread_mutex_lock(&join_mutex) != 0)
+		exit(-1);
+
+	++toexit;
+
+	if (!registered_finished_operating) {
+		++joining;
+		while (!finished_operating) {
+			if (pthread_cond_wait(&waiting_to_endoperating, &join_mutex) != 0)
+				exit(-1);
+		}
+		registered_finished_operating = true;
+		--joining;
+		if (joining == 0) {
+			if (pthread_mutex_unlock(&join_mutex) != 0)
+				exit(-1);
+
+			module_destroy_state();
+
+			if (pthread_mutex_lock(&join_mutex) != 0)
+				exit(-1);
+
+			finished_destroying = true;
+			if (pthread_cond_broadcast(&waiting_to_enddestroying) != 0)
+				exit(-1);
+		}
+	}
+	while (!finished_destroying) {
+		if (pthread_cond_wait(&waiting_to_enddestroying, &join_mutex) != 0)
+				exit(-1);
+	}
+
+	--toexit;
+
+	if (pthread_mutex_unlock(&join_mutex) != 0)
+		exit(-1);
+	
+	if (toexit == 0 && destroyed++ == 0) {
+		pthread_cond_destroy(&waiting_to_enddestroying);
+		pthread_mutex_destroy(&join_mutex);
+		count_actors = 0;
+		running = 0;
+		printf("zenbu keshita\n");
+	}
+}
+
+static void stop_tp(int signo) {
 	if (signo == SIGINT)
 		killed = true;
 	else
 		exit(-1);
+	
+	tp_join();
 }
 
 static void set_sigint() {
 	struct sigaction sigint_action;
-	sigint_action.sa_handler = change_flag;
-	sigint_action.sa_flags = SA_RESTART;
+	sigint_action.sa_handler = stop_tp;
+	sigint_action.sa_flags = SA_RESTART | SA_RESETHAND;
 	sigaction(SIGINT, &sigint_action, NULL);
 	sigint_set = true;
 }
@@ -424,13 +493,21 @@ static void set_sigint() {
 static bool module_init_state() {
 	if (running++ != 0)
 		return false;
+	
+	killed = false;
+	finished_operating = false;
+	joining = 0;
+	finished_destroying = false;
+	toexit = 0;
+	count_actors = 0;
+	actors_finished = 0;
+	threads_finished = 0;
+	destroyed = 0;
+	registered_finished_operating = false;
 
-	if (!sigint_set)
+	if (!sigint_set) {
 		set_sigint();
-
-	for (int i = 0; i < CAST_LIMIT; ++i) {
-		if (actors[i] != NULL)
-			actor_destroy(&(actors[i]));
+		sigint_set = true;
 	}
 
 	if ((thread_pool = tp_init()) == NULL)
@@ -447,37 +524,31 @@ static bool module_init_state() {
 		return false;
 	}
 
-	count_actors = 0;
-	actors_finished = 0;
-
-	if (pthread_mutex_init(&thread_finish_lock, NULL) != 0) {
+	if (pthread_mutex_init(&join_mutex, NULL) != 0) {
 		pthread_mutex_destroy(&state_counters_lock);
 		pthread_key_delete(thread_number);
 		tp_destroy(&thread_pool);
 		return false;
 	}
 
-	threads_finished = 0;
-
-	return true;
-}
-
-static void module_destroy_state() {
-	pthread_mutex_destroy(&thread_finish_lock);
-	pthread_mutex_destroy(&state_counters_lock);
-	pthread_key_delete(thread_number);
-	printf("trinkets destroyed\n");
-	tp_destroy(&thread_pool);
-	printf("tp destroyed\n");
-
-	for (int i = 0; i < CAST_LIMIT; ++i) {
-		if (actors[i] != NULL)
-			actor_destroy(&(actors[i]));
+	if (pthread_cond_init(&waiting_to_endoperating, NULL) != 0) {
+		pthread_mutex_destroy(&join_mutex);
+		pthread_mutex_destroy(&state_counters_lock);
+		pthread_key_delete(thread_number);
+		tp_destroy(&thread_pool);
+		return false;
 	}
 
-	count_actors = 0;
-	threads_finished = 0;
-	running = 0;
+	if (pthread_cond_init(&waiting_to_enddestroying, NULL) != 0) {
+		pthread_cond_destroy(&waiting_to_endoperating);
+		pthread_mutex_destroy(&join_mutex);
+		pthread_mutex_destroy(&state_counters_lock);
+		pthread_key_delete(thread_number);
+		tp_destroy(&thread_pool);
+		return false;
+	}
+
+	return true;
 }
 
 
@@ -511,30 +582,32 @@ static void* thread_running(void* t_number) {
 			i = t_num;
 	}
 
-	printf("thread %ld finished\n", t_num);
-
-	if (pthread_mutex_lock(&thread_finish_lock) != 0)
-		exit(-1);
-
-	int tf = ++threads_finished;
-
-	if (pthread_mutex_unlock(&thread_finish_lock) != 0)
-		exit(-1);
-
-	printf("thread %ld finished, threads finished: %d\n", t_num, tf);
-
-	if (tf == POOL_SIZE) {
-		printf("thread %ld gonna destroy\n", t_num);
-		module_destroy_state();
-		printf("thread %ld, destroyed\n", t_num);
-	}
+	if (++threads_finished == POOL_SIZE) {
+		if (pthread_mutex_lock(&join_mutex) != 0)
+			exit(-1);
 		
+		finished_operating = true;
+		if (pthread_cond_broadcast(&waiting_to_endoperating) != 0)
+			exit(-1);
+
+		if (pthread_mutex_unlock(&join_mutex) != 0)
+			exit(-1);
+	}
+
 	printf("thread %ld quit\n", t_num);
 	return 0;
 }
 
 
 // Interface
+void actor_system_join(actor_id_t actor) {
+	actor_t* a = actor_get(actor);
+	if (a == NULL)
+		exit(-1);
+
+	tp_join();
+}
+
 int actor_system_create(actor_id_t* actor, role_t* const role) {
 	if (!module_init_state())
 		return -1;
@@ -564,14 +637,6 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 	return 0;
 }
 
-void actor_system_join(actor_id_t actor) {
-	actor_t* a = actor_get(actor);
-	if (a == NULL)
-		exit(-1); 
-
-	tp_join(thread_pool);
-	module_destroy_state();
-}
 
 #define SM_SUCCESS 0
 #define SM_ACTOR_DEAD -1
@@ -579,6 +644,7 @@ void actor_system_join(actor_id_t actor) {
 #define SM_ERROR -3
 
 int send_message(actor_id_t actor, message_t message) {
+	printf("senderino\n");
 	printf("what i want to send %ld\n", message.message_type);
 	actor_t* a = actor_get(actor);
 
@@ -603,7 +669,7 @@ int send_message(actor_id_t actor, message_t message) {
 }
 
 actor_id_t actor_id_self() {
-	size_t* t_num_ptr = (size_t*)pthread_getspecific(thread_number);
+	int* t_num_ptr = (int*)pthread_getspecific(thread_number);
 
 	if (t_num_ptr == NULL)
 		exit(-1);

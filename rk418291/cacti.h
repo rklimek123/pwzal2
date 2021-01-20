@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <signal.h>
 
 
 typedef long message_type_t;
