@@ -115,6 +115,7 @@ int main() {
 
 	actor_system_join(a);
 	printf("%llu\n", n);
+	
 	free(acts);
 	free(data);
 

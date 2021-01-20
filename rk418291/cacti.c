@@ -376,9 +376,9 @@ static tp_t* tp_init() {
 }
 
 static void tp_destroy(tp_t** tp) {
-	free((*tp)->threads);
 	free((*tp)->current_actor);
 	free((*tp)->keys);
+	free((*tp)->threads);
 	free(*tp);
 	printf("tp destroyed finally\n");
 }
@@ -427,6 +427,7 @@ static void module_destroy_state() {
 }
 
 static void tp_join() {
+	printf("want to join\n");
 	if (pthread_mutex_lock(&join_mutex) != 0)
 		exit(-1);
 
@@ -582,7 +583,16 @@ static void* thread_running(void* t_number) {
 			i = t_num;
 	}
 
-	if (++threads_finished == POOL_SIZE) {
+	if (++threads_finished >= POOL_SIZE) {
+		printf("I am joining: %lld\n", t_num);
+
+		int ret;
+
+		for (int i = 0; i < POOL_SIZE; ++i) {
+			if ((size_t)i != t_num && pthread_join(thread_pool->threads[i], &ret) == 35)
+				exit(-1);
+		}
+
 		if (pthread_mutex_lock(&join_mutex) != 0)
 			exit(-1);
 		
@@ -593,6 +603,7 @@ static void* thread_running(void* t_number) {
 		if (pthread_mutex_unlock(&join_mutex) != 0)
 			exit(-1);
 	}
+
 
 	printf("thread %ld quit\n", t_num);
 	return 0;
