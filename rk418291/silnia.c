@@ -46,7 +46,7 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 
 	role_t** role_data = (role_t**)data;
 	role_t* role = *(role_data + 3);
-
+	int debug;
 	if (*k == *n) {
 		*n = *(k_factorial);
 	}
@@ -54,20 +54,30 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 		*k = *k + 1;
 		*k_factorial = (*k_factorial) * (*k);
 		
-		if (send_message(actor_id_self(), message_spawn(role)) != 0)
+		if ((debug = send_message(actor_id_self(), message_spawn(role))) != 0) {
+			printf("a %d\n", debug); // Bład: przesłanie do martwego aktora
 			exit(-2);
-
-		if (send_message(actor_id_self(), message_send(nbytes, data)) != 0)
+		}
+			
+		if ((debug = send_message(actor_id_self(), message_send(nbytes, data))) != 0) {
+			printf("b %d\n", debug);
 			exit(-2);
+		}
+			
 	}
 
-	if (send_message(actor_id_self(), message_godie()) != 0)
+	if ((debug = send_message(actor_id_self(), message_godie())) != 0) {
+		printf("c %d\n", debug);
 		exit(-2);
+	}
 }
 
 void send(void** stateptr, size_t nbytes, void* data) {
-	if (send_message(actor_id_self() + 1, message_factorize(nbytes, data)) != 0)
+	int debug;
+	if ((debug = send_message(actor_id_self() + 1, message_factorize(nbytes, data))) != 0) {
+		printf("d %d\n", debug);
 		exit(-2);
+	}
 }
 
 typedef void (* act_t2)(void** stateptr, size_t nbytes, void* data);
@@ -115,7 +125,7 @@ int main() {
 
 	actor_system_join(a);
 	printf("%llu\n", n);
-	
+
 	free(acts);
 	free(data);
 
