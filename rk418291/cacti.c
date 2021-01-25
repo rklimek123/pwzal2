@@ -198,16 +198,11 @@ static actor_t* actor_init() {
 static void actor_destroy(actor_t** a) {
 	for (int i = 0; i < POOL_SIZE; ++i) {
 		pthread_cond_destroy(&((*a)->wait_for_msg[i]));
-		printf("destroyed cond[%d]\n", i);
 	}
 	pthread_mutex_destroy(&((*a)->lock_thread));
-	printf("destroyed lock_thread mutex\n");
 	pthread_mutex_destroy(&((*a)->lock));
-	printf("destroyed lock mutex\n");
 	q_destroy(&((*a)->msg_q));
-	printf("destroyed queue\n");
 	free(*a);
-	printf("destroyed actor\n");
 }
 
 #define ACTOR_SUCCESS 0
@@ -223,8 +218,6 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 
 	if (a->dead)
 		return ACTOR_DEAD;
-
-	printf("what im sending %ld, to %ld\n", msg.message_type, a->id);
 
 	int ret = q_push(a->msg_q, msg);
 
@@ -244,7 +237,6 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 // assumes you have a->lock acquired
 static message_t actor_take_msg(actor_t* a) {
 	if (q_empty(a->msg_q)) {
-		printf("q empty\n");
 		exit(-1);
 	}
 
@@ -336,32 +328,6 @@ static int actor_handle_message(actor_t* a, message_t msg) {
 
 static pthread_key_t thread_number;
 
-bool debug_ini = false;
-pthread_mutex_t debug_mut;
-
-static void debug_q(actor_t* a) {
-	if (!debug_ini) {
-		pthread_mutex_init(&debug_mut, NULL);
-		debug_ini = true;
-	}
-
-	pthread_mutex_lock(&debug_mut);
-
-	int i = a->msg_q->front;
-	int printed = 0;
-
-	printf("actor %ld:\t", a->id);
-
-	while (printed <= a->msg_q->max_len) {
-		printf("%ld ", a->msg_q->messages[i].message_type);
-		i = (i + 1) % a->msg_q->max_len;
-		printed++;
-	}
-	printf("\n");
-
-	pthread_mutex_unlock(&debug_mut);
-}
-
 static int actor_exec(actor_t* a) {
 	if (pthread_mutex_lock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
@@ -372,19 +338,10 @@ static int actor_exec(actor_t* a) {
 		return ACTOR_IDLE;
 	}
 
-	printf("actor %ld, dead %d, cur_len %d, max_len %d, front %d, back %d, thread %d\n",
-		a->id, a->dead, a->msg_q->cur_len, a->msg_q->max_len, a->msg_q->front, a->msg_q->back, *((int*)pthread_getspecific(thread_number)));
-	debug_q(a);
-
-		
 	message_t msg = actor_take_msg(a);
-	printf("actor %ld took %ld, dead %d, cur_len %d, max_len %d, front %d, back %d\n",
-		a->id, msg.message_type, a->dead, a->msg_q->cur_len, a->msg_q->max_len, a->msg_q->front, a->msg_q->back);
 
 	if (pthread_mutex_unlock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
-
-	printf("actor %ld handling %ld\n", a->id, msg.message_type);
 
 	switch (msg.message_type) {
 		case MSG_SPAWN:
@@ -583,7 +540,6 @@ static void tp_destroy(tp_t** tp) {
 	free((*tp)->keys);
 	free((*tp)->threads);
 	free(*tp);
-	printf("tp destroyed finally\n");
 }
 
 // Module state
@@ -640,21 +596,15 @@ static void module_destroy_state() {
 
 	for (int i = 0; i < CAST_LIMIT; ++i) {
 		if (actors[i] != NULL) {
-			printf("actor %d wo keshiteimasu\n", i);
 			actor_destroy(&(actors[i]));
-			printf("actor %d wo keshita\n", i);
 		}
 			
 	}
-
-	printf("keshita\n");
 }
 
 static void tp_join() {
-	printf("want to join\n");
 	if (pthread_mutex_lock(&join_mutex) != 0)
 		exit(-1);
-	printf("want to join\n");
 	++toexit;
 
 	if (!registered_finished_operating) {
@@ -694,7 +644,6 @@ static void tp_join() {
 		pthread_mutex_destroy(&join_mutex);
 		count_actors = 0;
 		running = 0;
-		printf("zenbu keshita\n");
 	}
 }
 
@@ -789,8 +738,6 @@ static bool module_init_state() {
 
 // Threads
 static void* thread_running(void* t_number) {
-	printf("thread %d running\n", *((int*)t_number));
-
 	if (pthread_setspecific(thread_number, t_number) != 0)
 		exit(-1);
 
@@ -799,18 +746,12 @@ static void* thread_running(void* t_number) {
 	while (actors_finished < count_actors) {
 		if (killed)
 			break;
-		
-
-
 
 
 		if (pthread_mutex_lock(&(thread_pool->queue_mutex)) != 0)
 			exit(-1);
 
-		bool waited = false;
 		while (tq_empty(thread_pool->thread_queue)) {
-			waited = true;
-			printf("%ld gonna wait on wait_on_q\n", t_num);
 			if (killed) {
 				if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
 					exit(-1);
@@ -827,31 +768,24 @@ static void* thread_running(void* t_number) {
 			}
 		}
 
-		if (waited)
-			printf("%ld ended waiting on wait_on_q\n", t_num);
-
 		if (killed) {
 			if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
 				exit(-1);
 			break;
 		}
-
+		
 		actor_id_t id_a = tq_front(thread_pool->thread_queue);
 		tq_pop(thread_pool->thread_queue);
 		actor_t* a = actor_get(id_a);
 
 		if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
 			exit(-1);
-		
-
-
 
 
 		if (pthread_mutex_lock(&(a->lock_thread)) != 0)
 			exit(-1);
-		waited = false;
+
 		while (a->active) {
-			waited = true;
 			int to_wait = a->to_wait;
 			a->to_wait = (a->to_wait + 1) % POOL_SIZE;
 			a->waiting = a->waiting + 1;
@@ -862,7 +796,6 @@ static void* thread_running(void* t_number) {
 				break;
 			}
 
-			printf("%ld gonna wait on wait_for_msg[%d] of actor %ld\tsignal is %d\n", t_num, to_wait, a->id, a->to_signal);
 			if (pthread_cond_wait(&(a->wait_for_msg[to_wait]), &(a->lock_thread)) != 0)
 				exit(-1);
 			
@@ -872,8 +805,6 @@ static void* thread_running(void* t_number) {
 				break;
 			}
 		}
-		if (waited)
-			printf("%ld ended waiting on actor %ld\n", t_num, a->id);
 
 		if (killed) {
 			if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
@@ -886,9 +817,6 @@ static void* thread_running(void* t_number) {
 		if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
 			exit(-1);
 
-		
-
-
 
 		thread_pool->current_actor[t_num] = a;
 
@@ -896,10 +824,6 @@ static void* thread_running(void* t_number) {
 
 		if (check == ACTOR_ERROR)
 			exit(-1);
-		
-
-
-
 
 
 		if (pthread_mutex_lock(&(a->lock_thread)) != 0)
@@ -910,7 +834,6 @@ static void* thread_running(void* t_number) {
 		if (a->waiting > 0) {
 			int to_signal = a->to_signal;
 			a->to_signal = (a->to_signal + 1) % POOL_SIZE;
-			printf("signal on %ld index %d by thread %ld\n", a->id, to_signal, t_num);
 			a->waiting = a->waiting - 1;
 
 			if (pthread_cond_signal(&(a->wait_for_msg[to_signal])) != 0)
@@ -919,14 +842,9 @@ static void* thread_running(void* t_number) {
 
 		if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
 			exit(-1);
-		
-		printf("thread %ld, actors_finished %ld, count_actors %ld\n", t_num, actors_finished, count_actors);
 	}
 
 	killed = true;
-
-
-
 
 
 	if (pthread_mutex_lock(&(thread_pool->queue_mutex)) != 0)
@@ -938,13 +856,8 @@ static void* thread_running(void* t_number) {
 	if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
 		exit(-1);
 
-	
-
-
 
 	if (++threads_finished >= POOL_SIZE) {
-		printf("I am joining: %ld\n", t_num);
-
 		int ret;
 
 		for (int i = 0; i < POOL_SIZE; ++i) {
@@ -963,8 +876,6 @@ static void* thread_running(void* t_number) {
 			exit(-1);
 	}
 
-
-	printf("thread %ld quit\n", t_num);
 	return 0;
 }
 
@@ -981,7 +892,6 @@ void actor_system_join(actor_id_t actor) {
 int actor_system_create(actor_id_t* actor, role_t* const role) {
 	if (!module_init_state())
 		return -1;
-	printf("state initialized\n");
 
 	actor_t* a = actor_create(role);
 
@@ -991,8 +901,6 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 	}
 	
 	for (int i = 0; i < POOL_SIZE; ++i) {
-		printf("thread %d to be created\n", i);
-
 		if (pthread_create(&(thread_pool->threads[i]),
 						NULL,
 						thread_running,
@@ -1000,8 +908,6 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 			exit(-1);
 		}
 	}
-
-	printf("threads created\n");
 
 	*actor = a->id;
 	return 0;
@@ -1014,8 +920,6 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 #define SM_ERROR -3
 
 int send_message(actor_id_t actor, message_t message) {
-	printf("senderino\n");
-	printf("what i want to send %ld, to %ld\n", message.message_type, actor);
 	actor_t* a = actor_get(actor);
 
 	if (a == NULL)

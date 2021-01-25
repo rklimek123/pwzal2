@@ -1,4 +1,5 @@
 #include "cacti.h"
+#include <stdio.h>
 
 typedef unsigned long long num_t;
 
@@ -46,7 +47,7 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 
 	role_t** role_data = (role_t**)data;
 	role_t* role = *(role_data + 3);
-	int debug;
+	
 	if (*k == *n) {
 		*n = *(k_factorial);
 	}
@@ -54,28 +55,22 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 		*k = *k + 1;
 		*k_factorial = (*k_factorial) * (*k);
 		
-		if ((debug = send_message(actor_id_self(), message_spawn(role))) != 0) {
-			printf("a %d\n", debug); // Bład: przesłanie do martwego aktora
+		if (send_message(actor_id_self(), message_spawn(role)) != 0) {
 			exit(-2);
 		}
 			
-		if ((debug = send_message(actor_id_self(), message_send(nbytes, data))) != 0) {
-			printf("b %d\n", debug);
+		if (send_message(actor_id_self(), message_send(nbytes, data)) != 0) {
 			exit(-2);
 		}
 	}
 
-	if ((debug = send_message(actor_id_self(), message_godie())) != 0) {
-		printf("c %d\n", debug); // chciałem się zabić, ale już nie żyję!
+	if (send_message(actor_id_self(), message_godie()) != 0) {
 		exit(-2);
 	}
 }
 
 void send(void** stateptr, size_t nbytes, void* data) {
-	int debug;
-	printf("i am %ld, sending to %ld\n", actor_id_self(), actor_id_self() + 1);
-	if ((debug = send_message(actor_id_self() + 1, message_factorize(nbytes, data))) != 0) {
-		printf("d %d\n", debug);
+	if (send_message(actor_id_self() + 1, message_factorize(nbytes, data)) != 0) {
 		exit(-2);
 	}
 }
@@ -87,7 +82,7 @@ int main() {
 	scanf("%lld", &number);
 
 	if (number <= 0) {
-		printf("Calculated without using actors' system: %d\n", 1);
+		printf("%d\n", 1);
 		return 0;
 	}
 
