@@ -282,16 +282,28 @@ static actor_t* actor_create(role_t* const role) {
 	return a;
 }
 
+static message_t msg_hello(actor_t* a) {
+	message_t new_msg;
+	new_msg.message_type = MSG_HELLO;
+
+	if (a == NULL) {
+		new_msg.nbytes = 0;
+		new_msg.data = NULL;
+	}
+	else {
+		new_msg.nbytes = sizeof(actor_id_t*);
+		new_msg.data = (void*)&(a->id);
+	}
+	
+	return new_msg;
+}
+
 static int actor_handle_spawn(actor_t* a, message_t msg) {
 	actor_t* new_a = actor_create((role_t*)msg.data);
 	if (new_a == NULL)
 		return ACTOR_ERROR;
 
-	message_t new_msg;
-	new_msg.message_type = MSG_HELLO;
-	new_msg.nbytes = sizeof(actor_id_t*);
-	new_msg.data = (void*)&(a->id);
-	actor_send_msg(new_a, new_msg);
+	actor_send_msg(new_a, msg_hello(a));
 
 	return ACTOR_SUCCESS;
 }
@@ -910,6 +922,9 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 	}
 
 	*actor = a->id;
+
+	send_message(a->id, msg_hello(NULL));
+
 	return 0;
 }
 
