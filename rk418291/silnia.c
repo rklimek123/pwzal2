@@ -47,7 +47,7 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 
 	role_t** role_data = (role_t**)data;
 	role_t* role = *(role_data + 3);
-	
+
 	if (*k == *n) {
 		*n = *(k_factorial);
 	}
@@ -58,7 +58,7 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 		if (send_message(actor_id_self(), message_spawn(role)) != 0) {
 			exit(-2);
 		}
-			
+		
 		if (send_message(actor_id_self(), message_send(nbytes, data)) != 0) {
 			exit(-2);
 		}
