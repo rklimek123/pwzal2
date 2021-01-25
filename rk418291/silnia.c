@@ -63,17 +63,17 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 			printf("b %d\n", debug);
 			exit(-2);
 		}
-			
 	}
 
 	if ((debug = send_message(actor_id_self(), message_godie())) != 0) {
-		printf("c %d\n", debug);
+		printf("c %d\n", debug); // chciałem się zabić, ale już nie żyję!
 		exit(-2);
 	}
 }
 
 void send(void** stateptr, size_t nbytes, void* data) {
 	int debug;
+	printf("i am %ld, sending to %ld\n", actor_id_self(), actor_id_self() + 1);
 	if ((debug = send_message(actor_id_self() + 1, message_factorize(nbytes, data))) != 0) {
 		printf("d %d\n", debug);
 		exit(-2);
@@ -83,7 +83,7 @@ void send(void** stateptr, size_t nbytes, void* data) {
 typedef void (* act_t2)(void** stateptr, size_t nbytes, void* data);
 
 int main() {
-	long long number;
+	unsigned long long number;
 	scanf("%lld", &number);
 
 	if (number <= 0) {
@@ -122,8 +122,9 @@ int main() {
 
 	if (check != 0)
 		exit(check);
-
+	
 	actor_system_join(a);
+	
 	printf("%llu\n", n);
 
 	free(acts);

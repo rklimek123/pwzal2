@@ -31,21 +31,22 @@ static q_t* q_init() {
 }
 
 static void q_destroy(q_t** q) {
-	if (*q != NULL) {
-		free((*q)->messages);
+	if (q != NULL && *q != NULL) {
+		if ((*q)->messages != NULL)
+			free((*q)->messages);
 		free(*q);
 	}
 }
 
 static int q_size(q_t* q) {
-	if (q == NULL)
+	if (q == NULL || q->messages == NULL)
 		return 0;
 	else
 		return q->cur_len;
 }
 
 static bool q_empty(q_t* q) {
-	return q_size(q) == 0;
+	return q_size(q) <= 0;
 }
 
 static bool q_full(q_t* q) {
@@ -95,7 +96,7 @@ static int q_pop(q_t* q) {
 	--(q->cur_len);
 
 	if (q->cur_len < q->max_len / 4) {
-		message_t* new_msgs = (message_t*)malloc(sizeof(message_t) * q->max_len / 4);
+		message_t* new_msgs = (message_t*)malloc(sizeof(message_t) * q->max_len / 2);
 		if (new_msgs == NULL) {
 			++(q->cur_len);
 			q->front = (q->max_len + q->front - 1) % q->max_len;
@@ -110,7 +111,7 @@ static int q_pop(q_t* q) {
 		q->messages = new_msgs;
 		q->front = 0;
 		q->back = q->cur_len - 1;
-		q->max_len /= 4;
+		q->max_len /= 2;
 	}
 
 	return Q_SUCCESS;
@@ -127,10 +128,15 @@ typedef struct actor {
 	role_t const* role;
 	actor_id_t id;
 	bool dead;
-	bool finished;
 	pthread_mutex_t lock;
-	pthread_cond_t wait_for_msg;
 	void* state;
+	bool active;
+
+	int to_wait;
+	int to_signal;
+	pthread_mutex_t lock_thread;
+	pthread_cond_t wait_for_msg[POOL_SIZE];
+	int waiting;
 } actor_t;
 
 static size_t count_actors;
@@ -152,7 +158,6 @@ static actor_t* actor_init() {
 	}
 	
 	a->dead = false;
-	a->finished = false;
 	
 	if (pthread_mutex_init(&(a->lock), NULL) != 0) {
 		q_destroy(&(a->msg_q));
@@ -160,29 +165,57 @@ static actor_t* actor_init() {
 		return NULL;
 	}
 
-	if (pthread_cond_init(&(a->wait_for_msg), NULL) != 0) {
+	if (pthread_mutex_init(&(a->lock_thread), NULL) != 0) {
 		pthread_mutex_destroy(&(a->lock));
 		q_destroy(&(a->msg_q));
 		free(a);
 		return NULL;
 	}
 
+	for (int i = 0; i < POOL_SIZE; ++i) {
+		if (pthread_cond_init(&(a->wait_for_msg[i]), NULL) != 0) {
+			for (int j = 0; j < i; ++j) {
+				pthread_cond_destroy(&(a->wait_for_msg[j]));
+			}
+			pthread_mutex_destroy(&(a->lock_thread));
+			pthread_mutex_destroy(&(a->lock));
+			q_destroy(&(a->msg_q));
+			free(a);
+			return NULL;
+		}
+	}
+	
+
 	a->state = NULL;
+	a->active = false;
+	a->to_wait = 0;
+	a->to_signal = 0;
+	a->waiting = 0;
 
 	return a;
 }
 
 static void actor_destroy(actor_t** a) {
-	pthread_cond_destroy(&((*a)->wait_for_msg));
+	for (int i = 0; i < POOL_SIZE; ++i) {
+		pthread_cond_destroy(&((*a)->wait_for_msg[i]));
+		printf("destroyed cond[%d]\n", i);
+	}
+	pthread_mutex_destroy(&((*a)->lock_thread));
+	printf("destroyed lock_thread mutex\n");
 	pthread_mutex_destroy(&((*a)->lock));
+	printf("destroyed lock mutex\n");
 	q_destroy(&((*a)->msg_q));
+	printf("destroyed queue\n");
 	free(*a);
+	printf("destroyed actor\n");
 }
 
 #define ACTOR_SUCCESS 0
 #define ACTOR_DEAD -1
 #define ACTOR_ERROR -2
 #define ACTOR_IDLE -3
+
+static int tp_notify(actor_id_t a);
 
 static int actor_send_msg(actor_t* a, message_t msg) {
 	if (pthread_mutex_lock(&(a->lock)) != 0)
@@ -191,7 +224,7 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 	if (a->dead)
 		return ACTOR_DEAD;
 
-	printf("what im sending %ld\n", msg.message_type);
+	printf("what im sending %ld, to %ld\n", msg.message_type, a->id);
 
 	int ret = q_push(a->msg_q, msg);
 
@@ -199,10 +232,10 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 		return ACTOR_ERROR;
 	}
 
-	if (pthread_cond_signal(&(a->wait_for_msg)) != 0)
+	if (pthread_mutex_unlock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
 
-	if (pthread_mutex_unlock(&(a->lock)) != 0)
+	if (tp_notify(a->id) != 0)
 		return ACTOR_ERROR;
 
 	return ACTOR_SUCCESS;
@@ -210,17 +243,14 @@ static int actor_send_msg(actor_t* a, message_t msg) {
 
 // assumes you have a->lock acquired
 static message_t actor_take_msg(actor_t* a) {
-	while (q_empty(a->msg_q)) { // trzeba za�atwi� �eby nie by�o aktywnego oczekiwania dla threadu tez)
-		if (pthread_cond_wait(&(a->wait_for_msg), &(a->lock)) != 0)
-			exit(-1);
+	if (q_empty(a->msg_q)) {
+		printf("q empty\n");
+		exit(-1);
 	}
 
 	message_t ret = q_front(a->msg_q);
 
 	if (q_pop(a->msg_q) != Q_SUCCESS)
-		exit(-1);
-
-	if (pthread_cond_signal(&(a->wait_for_msg)) != 0)
 		exit(-1);
 
 	return ret;
@@ -279,7 +309,6 @@ static int actor_handle_godie(actor_t* a) {
 		return ACTOR_ERROR;
 	
 	a->dead = true;
-	q_destroy(&(a->msg_q));
 
 	if (pthread_mutex_lock(&state_counters_lock) != 0)
 		return ACTOR_ERROR;
@@ -296,7 +325,6 @@ static int actor_handle_godie(actor_t* a) {
 }
 
 static int actor_handle_message(actor_t* a, message_t msg) {
-	printf("actor %ld handling %ld\n", a->id, msg.message_type);
 	message_type_t command = msg.message_type;
 
 	if ((size_t)command >= a->role->nprompts)
@@ -306,23 +334,57 @@ static int actor_handle_message(actor_t* a, message_t msg) {
 	return ACTOR_SUCCESS;
 }
 
+static pthread_key_t thread_number;
+
+bool debug_ini = false;
+pthread_mutex_t debug_mut;
+
+static void debug_q(actor_t* a) {
+	if (!debug_ini) {
+		pthread_mutex_init(&debug_mut, NULL);
+		debug_ini = true;
+	}
+
+	pthread_mutex_lock(&debug_mut);
+
+	int i = a->msg_q->front;
+	int printed = 0;
+
+	printf("actor %ld:\t", a->id);
+
+	while (printed <= a->msg_q->max_len) {
+		printf("%ld ", a->msg_q->messages[i].message_type);
+		i = (i + 1) % a->msg_q->max_len;
+		printed++;
+	}
+	printf("\n");
+
+	pthread_mutex_unlock(&debug_mut);
+}
+
 static int actor_exec(actor_t* a) {
 	if (pthread_mutex_lock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
 
-	if (q_empty(a->msg_q)) { // rozwi�zanie nieblokuj�ce, ale z aktywnym oczekiwaniem, NIEŻYWOTNE przez możliwość wywołanie actor_system_join z wewnętrznego wątku.
+	if (q_empty(a->msg_q)) {
 		if (pthread_mutex_unlock(&(a->lock)) != 0)
 			return ACTOR_ERROR;
 		return ACTOR_IDLE;
 	}
 
-	printf("actor %ld, dead %d, finished %d, cur_len %d, max_len %d\n",
-		a->id, a->dead, a->finished, a->msg_q->cur_len, a->msg_q->max_len);
+	printf("actor %ld, dead %d, cur_len %d, max_len %d, front %d, back %d, thread %d\n",
+		a->id, a->dead, a->msg_q->cur_len, a->msg_q->max_len, a->msg_q->front, a->msg_q->back, *((int*)pthread_getspecific(thread_number)));
+	debug_q(a);
+
 		
 	message_t msg = actor_take_msg(a);
+	printf("actor %ld took %ld, dead %d, cur_len %d, max_len %d, front %d, back %d\n",
+		a->id, msg.message_type, a->dead, a->msg_q->cur_len, a->msg_q->max_len, a->msg_q->front, a->msg_q->back);
 
 	if (pthread_mutex_unlock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
+
+	printf("actor %ld handling %ld\n", a->id, msg.message_type);
 
 	switch (msg.message_type) {
 		case MSG_SPAWN:
@@ -337,11 +399,125 @@ static int actor_exec(actor_t* a) {
 }
 
 
+// tq - thread queue
+typedef struct tq {
+	int cur_len;
+	int max_len;
+	actor_id_t* actors;
+	int front;
+	int back;
+} tq_t;
+
+static tq_t* tq_init() {
+	tq_t* q = (tq_t*)malloc(sizeof(tq_t));
+	if (q == NULL)
+		return NULL;
+	
+	q->cur_len = 0;
+	q->max_len = 2;
+
+	q->actors = (actor_id_t*)malloc(sizeof(actor_id_t) * 2);
+	if (q->actors == NULL) {
+		free(q);
+		return NULL;
+	}
+
+	q->front = 0;
+	q->back = -1;
+	return q;
+}
+
+static void tq_destroy(tq_t** q) {
+	if (*q != NULL) {
+		if ((*q)->actors != NULL)
+			free((*q)->actors);
+		free(*q);
+	}
+}
+
+static int tq_size(tq_t* q) {
+	if (q == NULL || q->actors == NULL)
+		return 0;
+	else
+		return q->cur_len;
+}
+
+static bool tq_empty(tq_t* q) {
+	return tq_size(q) <= 0;
+}
+
+#define TQ_SUCCESS 0
+#define TQ_EMPTY 1
+#define TQ_BAD_ALLOC -1
+
+static int tq_push(tq_t* q, actor_id_t a) {
+	q->back = (q->back + 1) % q->max_len;
+	q->actors[q->back] = a;
+	++(q->cur_len);
+
+	if (q->cur_len >= q->max_len) {
+		actor_id_t* new_actors = (actor_id_t*)malloc(sizeof(actor_id_t) * q->max_len * 2);
+		if (new_actors == NULL) {
+			--(q->cur_len);
+			q->back = (q->max_len + q->back - 1) % q->max_len;
+			return TQ_BAD_ALLOC;
+		}
+
+		for (int i = 0; i < q->cur_len; ++i) {
+			new_actors[i] = q->actors[(q->front + i) % q->max_len];
+		}
+
+		free(q->actors);
+		q->actors = new_actors;
+		q->front = 0;
+		q->back = q->cur_len - 1;
+		q->max_len *= 2;
+	}
+
+	return TQ_SUCCESS;
+}
+
+static int tq_pop(tq_t* q) {
+	if (tq_empty(q))
+		return TQ_EMPTY;
+
+	q->front = (q->front + 1) % q->max_len;
+	--(q->cur_len);
+
+	if (q->cur_len < q->max_len / 4) {
+		actor_id_t* new_actors = (actor_id_t*)malloc(sizeof(actor_id_t) * q->max_len / 2);
+		if (new_actors == NULL) {
+			++(q->cur_len);
+			q->front = (q->max_len + q->front - 1) % q->max_len;
+			return TQ_BAD_ALLOC;
+		}
+
+		for (int i = 0; i < q->cur_len; ++i) {
+			new_actors[i] = q->actors[(q->front + i) % q->max_len];
+		}
+
+		free(q->actors);
+		q->actors = new_actors;
+		q->front = 0;
+		q->back = q->cur_len - 1;
+		q->max_len /= 2;
+	}
+
+	return TQ_SUCCESS;
+}
+
+static actor_id_t tq_front(tq_t* q) {
+	return q->actors[q->front];
+}
+
 // tp - thread pool
 typedef struct thread_pool {
 	pthread_t* threads;
 	actor_t** current_actor;
 	void* keys;
+	tq_t* thread_queue;
+	pthread_mutex_t queue_mutex;
+	pthread_cond_t wait_on_q;
 } tp_t;
 
 static tp_t* tp_init() {
@@ -372,10 +548,37 @@ static tp_t* tp_init() {
 		keys[i] = i;
 	}
 
+	if (pthread_mutex_init(&(tp->queue_mutex), NULL) != 0) {
+		free(tp->keys);
+		free(tp->current_actor);
+		free(tp->threads);
+		return NULL;
+	}
+
+	if (pthread_cond_init(&(tp->wait_on_q), NULL) != 0) {
+		pthread_mutex_destroy(&(tp->queue_mutex));
+		free(tp->keys);
+		free(tp->current_actor);
+		free(tp->threads);
+		return NULL;
+	}
+
+	if ((tp->thread_queue = tq_init()) == NULL) {
+		pthread_cond_destroy(&(tp->wait_on_q));
+		pthread_mutex_destroy(&(tp->queue_mutex));
+		free(tp->keys);
+		free(tp->current_actor);
+		free(tp->threads);
+		return NULL;
+	}
+
 	return tp;
 }
 
 static void tp_destroy(tp_t** tp) {
+	tq_destroy(&((*tp)->thread_queue));
+	pthread_cond_destroy(&((*tp)->wait_on_q));
+	pthread_mutex_destroy(&((*tp)->queue_mutex));
 	free((*tp)->current_actor);
 	free((*tp)->keys);
 	free((*tp)->threads);
@@ -383,13 +586,30 @@ static void tp_destroy(tp_t** tp) {
 	printf("tp destroyed finally\n");
 }
 
-
 // Module state
 static _Atomic int running = 0;
 static bool sigint_set = false;
 static bool killed;
 static tp_t* thread_pool;
-static pthread_key_t thread_number;
+
+static int tp_notify(actor_id_t a) {
+	if (pthread_mutex_lock(&(thread_pool->queue_mutex)) != 0)
+		return -1;
+
+	int ret = tq_push(thread_pool->thread_queue, a);
+
+	if (ret != TQ_SUCCESS) {
+		return -1;
+	}
+
+	if (pthread_cond_signal(&(thread_pool->wait_on_q)) != 0)
+		return -1;
+
+	if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
+		return -1;
+
+	return 0;
+}
 
 static pthread_mutex_t join_mutex;
 static pthread_cond_t waiting_to_endoperating;
@@ -419,8 +639,12 @@ static void module_destroy_state() {
 	tp_destroy(&thread_pool);
 
 	for (int i = 0; i < CAST_LIMIT; ++i) {
-		if (actors[i] != NULL)
+		if (actors[i] != NULL) {
+			printf("actor %d wo keshiteimasu\n", i);
 			actor_destroy(&(actors[i]));
+			printf("actor %d wo keshita\n", i);
+		}
+			
 	}
 
 	printf("keshita\n");
@@ -430,7 +654,7 @@ static void tp_join() {
 	printf("want to join\n");
 	if (pthread_mutex_lock(&join_mutex) != 0)
 		exit(-1);
-
+	printf("want to join\n");
 	++toexit;
 
 	if (!registered_finished_operating) {
@@ -475,12 +699,22 @@ static void tp_join() {
 }
 
 static void stop_tp(int signo) {
-	if (signo == SIGINT)
+	if (signo == SIGINT) {
 		killed = true;
+		pthread_cond_broadcast(&(thread_pool->wait_on_q));
+		for (int i = 0; i < CAST_LIMIT; i++) {
+			if (actors[i] != NULL) {
+				for (int j = 0; j < POOL_SIZE; j++) {
+					pthread_cond_broadcast(&(actors[i]->wait_for_msg[j]));
+				}
+			}
+		}
+	}
+		
 	else
 		exit(-1);
 	
-	tp_join();
+	//tp_join();
 }
 
 static void set_sigint() {
@@ -561,35 +795,160 @@ static void* thread_running(void* t_number) {
 		exit(-1);
 
 	size_t t_num = (size_t)(*((int*)t_number));
-	size_t i = t_num;
 
 	while (actors_finished < count_actors) {
-		//printf("thread %d running\n", *((int*)t_number));
 		if (killed)
 			break;
+		
 
-		actor_t* a = actors[i];
+
+
+
+		if (pthread_mutex_lock(&(thread_pool->queue_mutex)) != 0)
+			exit(-1);
+
+		bool waited = false;
+		while (tq_empty(thread_pool->thread_queue)) {
+			waited = true;
+			printf("%ld gonna wait on wait_on_q\n", t_num);
+			if (killed) {
+				if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
+					exit(-1);
+				break;
+			}
+
+			if (pthread_cond_wait(&(thread_pool->wait_on_q), &(thread_pool->queue_mutex)) != 0)
+				exit(-1);
+			
+			if (killed) {
+				if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
+					exit(-1);
+				break;
+			}
+		}
+
+		if (waited)
+			printf("%ld ended waiting on wait_on_q\n", t_num);
+
+		if (killed) {
+			if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
+				exit(-1);
+			break;
+		}
+
+		actor_id_t id_a = tq_front(thread_pool->thread_queue);
+		tq_pop(thread_pool->thread_queue);
+		actor_t* a = actor_get(id_a);
+
+		if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
+			exit(-1);
+		
+
+
+
+
+		if (pthread_mutex_lock(&(a->lock_thread)) != 0)
+			exit(-1);
+		waited = false;
+		while (a->active) {
+			waited = true;
+			int to_wait = a->to_wait;
+			a->to_wait = (a->to_wait + 1) % POOL_SIZE;
+			a->waiting = a->waiting + 1;
+
+			if (killed) {
+				if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
+					exit(-1);
+				break;
+			}
+
+			printf("%ld gonna wait on wait_for_msg[%d] of actor %ld\tsignal is %d\n", t_num, to_wait, a->id, a->to_signal);
+			if (pthread_cond_wait(&(a->wait_for_msg[to_wait]), &(a->lock_thread)) != 0)
+				exit(-1);
+			
+			if (killed) {
+				if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
+					exit(-1);
+				break;
+			}
+		}
+		if (waited)
+			printf("%ld ended waiting on actor %ld\n", t_num, a->id);
+
+		if (killed) {
+			if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
+				exit(-1);
+			break;
+		}
+		
+		a->active = true;
+		
+		if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
+			exit(-1);
+
+		
+
+
+
 		thread_pool->current_actor[t_num] = a;
 
-		if (a != NULL) {
-			//printf("thread %ld actor go to exec\n", t_num);
-			int check = actor_exec(a);
-			if (check == ACTOR_ERROR)
+		int check = actor_exec(a);
+
+		if (check == ACTOR_ERROR)
+			exit(-1);
+		
+
+
+
+
+
+		if (pthread_mutex_lock(&(a->lock_thread)) != 0)
+			exit(-1);
+		
+		a->active = false;
+
+		if (a->waiting > 0) {
+			int to_signal = a->to_signal;
+			a->to_signal = (a->to_signal + 1) % POOL_SIZE;
+			printf("signal on %ld index %d by thread %ld\n", a->id, to_signal, t_num);
+			a->waiting = a->waiting - 1;
+
+			if (pthread_cond_signal(&(a->wait_for_msg[to_signal])) != 0)
 				exit(-1);
 		}
 
-		i += POOL_SIZE;
-		if (i > count_actors)
-			i = t_num;
+		if (pthread_mutex_unlock(&(a->lock_thread)) != 0)
+			exit(-1);
+		
+		printf("thread %ld, actors_finished %ld, count_actors %ld\n", t_num, actors_finished, count_actors);
 	}
 
+	killed = true;
+
+
+
+
+
+	if (pthread_mutex_lock(&(thread_pool->queue_mutex)) != 0)
+		exit(-1);
+
+	if (pthread_cond_broadcast(&(thread_pool->wait_on_q)) != 0)
+		exit(-1);
+
+	if (pthread_mutex_unlock(&(thread_pool->queue_mutex)) != 0)
+		exit(-1);
+
+	
+
+
+
 	if (++threads_finished >= POOL_SIZE) {
-		printf("I am joining: %lld\n", t_num);
+		printf("I am joining: %ld\n", t_num);
 
 		int ret;
 
 		for (int i = 0; i < POOL_SIZE; ++i) {
-			if ((size_t)i != t_num && pthread_join(thread_pool->threads[i], &ret) == 35)
+			if ((size_t)i != t_num && pthread_join(thread_pool->threads[i], (void **)(&ret)) == 35)
 				exit(-1);
 		}
 
@@ -656,7 +1015,7 @@ int actor_system_create(actor_id_t* actor, role_t* const role) {
 
 int send_message(actor_id_t actor, message_t message) {
 	printf("senderino\n");
-	printf("what i want to send %ld\n", message.message_type);
+	printf("what i want to send %ld, to %ld\n", message.message_type, actor);
 	actor_t* a = actor_get(actor);
 
 	if (a == NULL)
