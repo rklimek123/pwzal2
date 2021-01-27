@@ -37,9 +37,15 @@ message_t message_send(size_t nbytes, void* data) {
 }
 
 
-void hello(void** stateptr, size_t nbytes, void* data) {}
+void hello(void** stateptr, size_t nbytes, void* data) {
+	(void)stateptr;
+	(void)nbytes;
+	(void)data;
+}
 
 void factorize(void **stateptr, size_t nbytes, void *data) {
+	(void)stateptr;
+	
 	num_t** my_data = (num_t**)data;
 	num_t* n = *my_data;
 	num_t* k = *(my_data + 1);
@@ -70,6 +76,8 @@ void factorize(void **stateptr, size_t nbytes, void *data) {
 }
 
 void send(void** stateptr, size_t nbytes, void* data) {
+	(void)stateptr;
+
 	if (send_message(actor_id_self() + 1, message_factorize(nbytes, data)) != 0) {
 		exit(-2);
 	}
