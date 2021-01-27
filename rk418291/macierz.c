@@ -47,6 +47,8 @@ message_t message_send(size_t nbytes, void* data) {
 
 
 void hello(void** stateptr, size_t nbytes, void* data) {
+	(void)nbytes;
+	
 	actor_id_t* state = malloc(sizeof(actor_id_t) * 2);
 
 	actor_id_t base_row = 0;
@@ -113,6 +115,8 @@ void sum(void **stateptr, size_t nbytes, void *data) {
 }
 
 void send(void** stateptr, size_t nbytes, void* data) {
+	void(stateptr);
+
 	if (send_message(actor_id_self() + 1, message_sum(nbytes, data)) != 0) {
 		exit(-2);
 	}
