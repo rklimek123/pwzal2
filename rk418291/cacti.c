@@ -312,15 +312,17 @@ static int actor_handle_godie(actor_t* a) {
 	if (pthread_mutex_lock(&(a->lock)) != 0)
 		return ACTOR_ERROR;
 	
-	a->dead = true;
+	if (!(a->dead)) {
+		a->dead = true;
+		
+		if (pthread_mutex_lock(&state_counters_lock) != 0)
+			return ACTOR_ERROR;
 
-	if (pthread_mutex_lock(&state_counters_lock) != 0)
-		return ACTOR_ERROR;
+		++actors_finished;
 
-	++actors_finished;
-
-	if (pthread_mutex_unlock(&state_counters_lock) != 0)
-		return ACTOR_ERROR;
+		if (pthread_mutex_unlock(&state_counters_lock) != 0)
+			return ACTOR_ERROR;
+	}
 
 	if (pthread_mutex_unlock(&(a->lock)) != 0)
 		return ACTOR_ERROR;

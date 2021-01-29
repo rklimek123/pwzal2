@@ -115,7 +115,7 @@ void sum(void **stateptr, size_t nbytes, void *data) {
 }
 
 void send(void** stateptr, size_t nbytes, void* data) {
-	void(stateptr);
+	(void)stateptr;
 
 	if (send_message(actor_id_self() + 1, message_sum(nbytes, data)) != 0) {
 		exit(-2);
